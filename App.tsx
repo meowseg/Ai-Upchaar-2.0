@@ -7,7 +7,7 @@ import ApiKeyModal from './components/ApiKeyModal';
 import VideoCall from './components/VideoCall';
 import Logo from './components/Logo';
 import { MOCK_CASES, MOCK_STATS, MOCK_PATIENTS, MOCK_APPOINTMENTS } from './services/mockData';
-import { MedicalCase, CaseStatus, CaseSeverity, User, UserRole, Appointment, OfflineSession, ActiveVideoSession } from './types';
+import { MedicalCase, CaseStatus, CaseSeverity, User, UserRole, Appointment, ActiveVideoSession } from './types';
 import { logout, getSession } from './services/authService';
 import { getAIConfig } from './services/aiService';
 

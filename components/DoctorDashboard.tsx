@@ -7,7 +7,7 @@ import {
     Video, Navigation,
     MessageSquare, Stethoscope, Trash2, RotateCcw
 } from 'lucide-react';
-import { MedicalCase, CaseSeverity, CaseStatus, PatientProfile, User as UserType, HomeRemedy, HealthTip, WellnessActivity, Season, OfflineSession, Appointment, ActiveVideoSession } from '../types';
+import { MedicalCase, CaseSeverity, CaseStatus, PatientProfile, User as UserType, HomeRemedy, HealthTip, WellnessActivity, Season, Appointment, ActiveVideoSession } from '../types';
 import PredictiveAlerts from './PredictiveAlerts';
 import TipCommentsModal from './TipCommentsModal';
 import { MOCK_REMEDIES, MOCK_HEALTH_TIPS, MOCK_WELLNESS_ACTIVITIES } from '../services/mockData';

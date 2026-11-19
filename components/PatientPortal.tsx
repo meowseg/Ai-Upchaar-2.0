@@ -6,7 +6,7 @@ import {
   Home, Volume2, Calendar, Truck, UserPlus, Image as ImageIcon,
   CreditCard, Banknote, Navigation, Smartphone, CheckCircle,
   Leaf, Sun, Snowflake, CloudRain, Zap, Heart, Info, ThumbsUp,
-  ExternalLink, Smile, Search, Pill, FlaskConical, Ambulance, Building, Clock, VolumeX
+  ExternalLink, Smile, Search, Pill, FlaskConical, Ambulance, Building, Clock, VolumeX, Stethoscope
 } from 'lucide-react';
 import { Message, CaseSeverity, MedicalCase, CaseStatus, User, Appointment, Hospital, Season, HomeRemedy, HealthTip, WellnessActivity, ActiveVideoSession } from '../types';
 import { startNewChat, analyzeCase, TriageResult, getRealNearbyHospitals, searchIndianLocation, reverseGeocodeLocality } from '../services/geminiService';
