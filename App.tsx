@@ -106,21 +106,104 @@ function App() {
     checkSession();
   }, []);
 
-  const handleNewCase = (newCase: MedicalCase) => {
-    setCases(prev => [newCase, ...prev]);
+  // Live Sync with Neon PostgreSQL Database via /api
+  useEffect(() => {
+    const syncWithDb = async () => {
+      try {
+        const [casesRes, apptsRes] = await Promise.all([
+          fetch('/api/cases').then(r => r.ok ? r.json() : null),
+          fetch('/api/appointments').then(r => r.ok ? r.json() : null)
+        ]);
+
+        if (Array.isArray(casesRes) && casesRes.length > 0) {
+          setCases(prev => {
+            const seen = new Set<string>();
+            const combined: MedicalCase[] = [];
+            // DB cases first
+            for (const c of casesRes) {
+              if (c && c.id && !seen.has(c.id)) {
+                seen.add(c.id);
+                combined.push(c);
+              }
+            }
+            // Keep any locally created ones that might be in flight
+            for (const p of prev) {
+              if (p && p.id && !seen.has(p.id)) {
+                seen.add(p.id);
+                combined.push(p);
+              }
+            }
+            return combined;
+          });
+        }
+
+        if (Array.isArray(apptsRes) && apptsRes.length > 0) {
+          setAppointments(apptsRes);
+        }
+      } catch (err) {
+        console.warn('Neon DB sync error (fallback to local state):', err);
+      }
+    };
+
+    // Initial load
+    syncWithDb();
+
+    // Live background polling every 6 seconds so patient bookings & cases show on doctor screen in real-time
+    const interval = setInterval(syncWithDb, 6000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const handleNewCase = async (newCase: MedicalCase) => {
+    setCases(prev => [newCase, ...prev.filter(c => c.id !== newCase.id)]);
     setStats(prev => ({
       ...prev,
       totalCases: prev.totalCases + 1,
       criticalPending: newCase.severity === 'CRITICAL' ? prev.criticalPending + 1 : prev.criticalPending
     }));
+
+    // Persist to Neon DB
+    try {
+      await fetch('/api/cases', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newCase)
+      });
+    } catch (err) {
+      console.warn('Failed to persist case to Neon DB:', err);
+    }
   };
 
-  const handleBookAppointment = (newAppt: Appointment) => {
-    setAppointments(prev => [newAppt, ...prev]);
+  const handleBookAppointment = async (newAppt: Appointment) => {
+    setAppointments(prev => [newAppt, ...prev.filter(a => a.id !== newAppt.id)]);
+
+    // Persist to Neon DB
+    try {
+      await fetch('/api/appointments', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newAppt)
+      });
+    } catch (err) {
+      console.warn('Failed to persist appointment to Neon DB:', err);
+    }
   };
 
-  const handleUpdateAppointment = (updatedAppt: Appointment) => {
+  const handleUpdateAppointment = async (updatedAppt: Appointment) => {
     setAppointments(prev => prev.map(a => a.id === updatedAppt.id ? updatedAppt : a));
+
+    // Persist to Neon DB
+    try {
+      await fetch('/api/appointments', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: updatedAppt.id,
+          status: updatedAppt.status
+        })
+      });
+    } catch (err) {
+      console.warn('Failed to update appointment in Neon DB:', err);
+    }
   };
 
   const handleStartVideoCall = (session: ActiveVideoSession) => {
@@ -132,7 +215,13 @@ function App() {
       if (activeVideoSession.appointmentId) {
         setAppointments(prev => prev.map(a => {
           if (a.id === activeVideoSession.appointmentId) {
-            return { ...a, status: 'COMPLETED' };
+            const updated = { ...a, status: 'COMPLETED' as const };
+            fetch('/api/appointments', {
+              method: 'PUT',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ id: updated.id, status: 'COMPLETED' })
+            }).catch(() => {});
+            return updated;
           }
           return a;
         }));
@@ -163,7 +252,7 @@ function App() {
     setActiveVideoSession(null);
   };
 
-  const handleUpdateStatus = (caseId: string, status: CaseStatus, prescription?: string, notes?: string) => {
+  const handleUpdateStatus = async (caseId: string, status: CaseStatus, prescription?: string, notes?: string) => {
     setCases(prev => prev.map(c => {
       if (c.id === caseId) {
         return {
@@ -181,9 +270,25 @@ function App() {
     if (status === 'APPROVED') {
       setStats(prev => ({ ...prev, deliveriesInProgress: prev.deliveriesInProgress + 1 }));
     }
+
+    // Persist to Neon DB
+    try {
+      await fetch('/api/cases', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: caseId,
+          status,
+          prescription,
+          doctorNotes: notes
+        })
+      });
+    } catch (err) {
+      console.warn('Failed to update case in Neon DB:', err);
+    }
   };
 
-  const handleDeleteCase = (caseId: string) => {
+  const handleDeleteCase = async (caseId: string) => {
     setCases(prev => {
       const updated = prev.filter(c => c.id !== caseId);
       try {
@@ -191,13 +296,23 @@ function App() {
       } catch (e) {}
       return updated;
     });
+
+    try {
+      await fetch(`/api/cases?id=${encodeURIComponent(caseId)}`, { method: 'DELETE' });
+    } catch (err) {
+      console.warn('Failed to delete case from Neon DB:', err);
+    }
   };
 
-  const handleResetCases = () => {
+  const handleResetCases = async () => {
     try {
       localStorage.removeItem('ai_upchaar_cases');
     } catch (e) {}
     setCases(MOCK_CASES);
+
+    try {
+      await fetch('/api/cases?reset=true', { method: 'DELETE' });
+    } catch (err) {}
   };
 
 
