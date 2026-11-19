@@ -1328,8 +1328,24 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                                                     <button
                                                         onClick={() => {
                                                             if (onStartVideoCall && selectedCase) {
+                                                                const patSlug = (selectedCase.patientName || 'patient').toLowerCase().replace(/[^a-z0-9]/g, '') || 'call';
+                                                                const callRoomId = `emg-${patSlug}`;
+
+                                                                fetch('/api/emergency', {
+                                                                    method: 'POST',
+                                                                    headers: { 'Content-Type': 'application/json' },
+                                                                    body: JSON.stringify({
+                                                                        patientId: selectedCase.patientId,
+                                                                        patientName: selectedCase.patientName,
+                                                                        roomId: callRoomId,
+                                                                        doctorId: user.id,
+                                                                        doctorName: user.name,
+                                                                        isDoctorCall: true
+                                                                    })
+                                                                }).catch(() => {});
+
                                                                 onStartVideoCall({
-                                                                    roomId: `case-${selectedCase.id}`,
+                                                                    roomId: callRoomId,
                                                                     patientId: selectedCase.patientId,
                                                                     patientName: selectedCase.patientName,
                                                                     doctorId: user.id,

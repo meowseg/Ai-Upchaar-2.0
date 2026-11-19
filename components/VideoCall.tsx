@@ -24,6 +24,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
   const processedSignalIds = useRef<Set<string | number>>(new Set());
   const lastSeenSignalId = useRef<number>(0);
   const handleIncomingSignalRef = useRef<((data: any) => Promise<void>) | null>(null);
+  const remoteStreamRef = useRef<MediaStream | null>(null);
 
   // States
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -48,7 +49,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
     ? (session.patientName || 'Patient')
     : (session.doctorName || 'Dr. A. Sharma');
 
-  const cleanRoomCode = (session.roomId || 'upchaar-consultation').replace(/[^a-zA-Z0-9_-]/g, '');
+  const cleanRoomCode = (session.roomId || 'upchaar-consultation').trim().toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
   // 1. Call duration timer (runs once connected or in-call)
   useEffect(() => {
@@ -139,13 +140,14 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
           localVideoRef.current.srcObject = stream;
         }
 
-        // Initialize WebRTC PeerConnection with Google STUN servers
+        // Initialize WebRTC PeerConnection with Google, Cloudflare & Mozilla STUN servers
         const pc = new RTCPeerConnection({
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
             { urls: 'stun:stun1.l.google.com:19302' },
             { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' }
+            { urls: 'stun:stun.cloudflare.com:3478' },
+            { urls: 'stun:stun.services.mozilla.com' }
           ]
         });
 
@@ -156,16 +158,26 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
           pc.addTrack(track, stream);
         });
 
-        // Remote track received handler
+        // Remote track received handler (handles streams array or individual tracks)
         pc.ontrack = (event) => {
-          console.log('✅ Remote track received:', event.streams);
-          if (event.streams && event.streams[0]) {
-            setRemoteStream(event.streams[0]);
-            setConnectionStatus('CONNECTED');
-            if (remoteVideoRef.current) {
-              remoteVideoRef.current.srcObject = event.streams[0];
-              remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+          console.log('✅ Remote track received:', event.track.kind, event.streams);
+          let streamToDisplay = (event.streams && event.streams[0]) ? event.streams[0] : null;
+          if (!streamToDisplay) {
+            if (!remoteStreamRef.current) {
+              remoteStreamRef.current = new MediaStream();
             }
+            remoteStreamRef.current.addTrack(event.track);
+            streamToDisplay = remoteStreamRef.current;
+          } else {
+            remoteStreamRef.current = streamToDisplay;
+          }
+
+          setRemoteStream(streamToDisplay);
+          setConnectionStatus('CONNECTED');
+
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = streamToDisplay;
+            remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
           }
         };
 
@@ -185,6 +197,13 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
             setConnectionStatus('CONNECTED');
           } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
             setConnectionStatus('WAITING_PEER');
+          }
+        };
+
+        pc.oniceconnectionstatechange = () => {
+          console.log('WebRTC ICE state:', pc.iceConnectionState);
+          if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') {
+            setConnectionStatus('CONNECTED');
           }
         };
 

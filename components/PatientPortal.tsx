@@ -58,6 +58,33 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState('');
   const [patientManualRoom, setPatientManualRoom] = useState('');
+  const [incomingDoctorCall, setIncomingDoctorCall] = useState<{
+    patientName: string;
+    doctorName?: string;
+    roomId: string;
+    timestamp: string;
+  } | null>(null);
+
+  useEffect(() => {
+    const checkIncomingDoctorCall = async () => {
+      try {
+        const res = await fetch('/api/emergency');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.emergency && data.emergency.isDoctorCall) {
+            const callPat = (data.emergency.patientName || '').toLowerCase().trim();
+            const curPat = (user.name || '').toLowerCase().trim();
+            if (callPat === curPat || callPat.includes(curPat) || curPat.includes(callPat)) {
+              setIncomingDoctorCall(data.emergency);
+            }
+          }
+        }
+      } catch (e) {}
+    };
+    checkIncomingDoctorCall();
+    const intv = setInterval(checkIncomingDoctorCall, 1500);
+    return () => clearInterval(intv);
+  }, [user.name]);
 
   // Doctor Tips Interaction State
   const [tipReactions, setTipReactions] = useState<Record<string, string>>({});
@@ -719,6 +746,43 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
 
   const renderHome = () => (
     <div className="flex flex-col h-full bg-slate-50 p-4 sm:p-6 lg:p-8 overflow-y-auto overflow-x-hidden">
+      {incomingDoctorCall && (
+        <div className="mb-4 bg-emerald-700 text-white px-4 py-3 rounded-2xl shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 animate-pulse border-2 border-emerald-400">
+          <div className="flex items-center gap-2 text-sm font-bold">
+            <Video size={22} className="animate-bounce shrink-0 text-white" />
+            <span>📞 INCOMING VIDEO CONSULTATION from <strong className="underline decoration-white underline-offset-2">{incomingDoctorCall.doctorName || 'Dr. A. Sharma'}</strong>!</span>
+            <span className="text-xs bg-emerald-900 px-2 py-0.5 rounded font-mono border border-emerald-500">Room: {incomingDoctorCall.roomId}</span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => {
+                const roomToJoin = incomingDoctorCall.roomId;
+                setIncomingDoctorCall(null);
+                fetch('/api/emergency', { method: 'DELETE' }).catch(() => {});
+                if (onStartVideoCall) {
+                  onStartVideoCall({
+                    roomId: roomToJoin,
+                    patientId: user.id,
+                    patientName: user.name,
+                    doctorId: 'DR101',
+                    doctorName: incomingDoctorCall.doctorName || 'Dr. A. Sharma',
+                    isEmergency: false
+                  });
+                }
+              }}
+              className="px-4 py-2 bg-white hover:bg-emerald-50 text-emerald-800 rounded-lg text-xs font-black shadow-lg transition cursor-pointer flex items-center gap-1.5 ring-2 ring-white"
+            >
+              <Video size={15} /> Join Consultation Call
+            </button>
+            <button
+              onClick={() => setIncomingDoctorCall(null)}
+              className="px-3 py-2 bg-emerald-900 hover:bg-emerald-950 text-white rounded-lg text-xs font-semibold cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
       {/* Welcome Hero Banner */}
       <div className="mb-6 md:mb-8 bg-gradient-to-br from-emerald-600 via-emerald-700 to-teal-800 rounded-2xl md:rounded-3xl p-5 md:p-8 text-white shadow-lg shadow-emerald-700/10 flex flex-col md:flex-row md:items-center justify-between gap-4 animate-in fade-in slide-in-from-top-4 duration-500 relative overflow-hidden shrink-0">
         <div className="relative z-10 flex items-center gap-4">

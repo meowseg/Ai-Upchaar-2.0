@@ -18,7 +18,7 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  const room = (req.query.room || req.body?.room || '').trim();
+  const room = (req.query.room || req.body?.room || '').trim().toLowerCase();
   if (!room) {
     return res.status(400).json({ error: 'room parameter is required' });
   }
@@ -78,8 +78,8 @@ export default async function handler(req, res) {
   // GET: Poll WebRTC signals for this room
   if (req.method === 'GET') {
     const sinceId = parseInt(req.query.sinceId || '0', 10);
-    const excludeRole = (req.query.excludeRole || '').trim();
-    const excludeId = (req.query.excludeId || '').trim();
+    const excludeRole = (req.query.excludeRole || '').trim().toLowerCase();
+    const excludeId = (req.query.excludeId || '').trim().toLowerCase();
 
     if (sql) {
       try {
@@ -93,7 +93,7 @@ export default async function handler(req, res) {
             payload,
             created_at as "timestamp"
           FROM upchaar_signals
-          WHERE room = ${room}
+          WHERE LOWER(TRIM(room)) = ${room}
             AND id > ${sinceId}
             AND created_at > NOW() - INTERVAL '10 minutes'
           ORDER BY id ASC
@@ -101,8 +101,8 @@ export default async function handler(req, res) {
         `;
 
         const filtered = rows.filter(r => {
-          if (excludeRole && r.senderRole === excludeRole) return false;
-          if (excludeId && r.senderId === excludeId) return false;
+          if (excludeRole && r.senderRole && r.senderRole.toLowerCase() === excludeRole) return false;
+          if (excludeId && r.senderId && r.senderId.toLowerCase() === excludeId) return false;
           return true;
         });
 
@@ -121,8 +121,8 @@ export default async function handler(req, res) {
     const memList = memorySignals.get(room) || [];
     const filteredMem = memList.filter(s => {
       if (s.id <= sinceId) return false;
-      if (excludeRole && s.senderRole === excludeRole) return false;
-      if (excludeId && s.senderId === excludeId) return false;
+      if (excludeRole && s.senderRole && s.senderRole.toLowerCase() === excludeRole) return false;
+      if (excludeId && s.senderId && s.senderId.toLowerCase() === excludeId) return false;
       return true;
     });
     const maxMemId = filteredMem.length > 0 ? Math.max(...filteredMem.map(s => s.id)) : sinceId;

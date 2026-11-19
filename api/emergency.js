@@ -20,7 +20,7 @@ export default async function handler(req, res) {
 
   const sql = getDb();
 
-  // GET /api/emergency - Check if there is an active emergency call in the last 5 minutes
+  // GET /api/emergency - Check if there is an active emergency or doctor call in the last 5 minutes
   if (req.method === 'GET') {
     try {
       if (sql) {
@@ -29,6 +29,9 @@ export default async function handler(req, res) {
             patient_id as "patientId", 
             patient_name as "patientName", 
             room_id as "roomId", 
+            doctor_id as "doctorId",
+            doctor_name as "doctorName",
+            is_doctor_call as "isDoctorCall",
             created_at as "timestamp"
           FROM upchaar_emergency 
           WHERE status = 'ACTIVE' 
@@ -54,9 +57,9 @@ export default async function handler(req, res) {
     return res.status(200).json({ emergency: inMemoryEmergency });
   }
 
-  // POST /api/emergency - Broadcast an emergency SOS call from patient
+  // POST /api/emergency - Broadcast an emergency SOS or doctor-initiated call
   if (req.method === 'POST') {
-    const { patientId, patientName, roomId } = req.body || {};
+    const { patientId, patientName, roomId, doctorId, doctorName, isDoctorCall } = req.body || {};
     if (!roomId) {
       return res.status(400).json({ error: 'roomId is required' });
     }
@@ -64,7 +67,10 @@ export default async function handler(req, res) {
     const payload = {
       patientId: patientId || 'P-UNKNOWN',
       patientName: patientName || 'Emergency Patient',
-      roomId: roomId.trim(),
+      roomId: roomId.trim().toLowerCase(),
+      doctorId: doctorId || '',
+      doctorName: doctorName || '',
+      isDoctorCall: !!isDoctorCall,
       timestamp: new Date().toISOString()
     };
     inMemoryEmergency = payload;
@@ -74,8 +80,8 @@ export default async function handler(req, res) {
         // Resolve older active emergencies and insert new one
         await sql`UPDATE upchaar_emergency SET status = 'RESOLVED' WHERE status = 'ACTIVE';`;
         await sql`
-          INSERT INTO upchaar_emergency (patient_id, patient_name, room_id, status)
-          VALUES (${payload.patientId}, ${payload.patientName}, ${payload.roomId}, 'ACTIVE');
+          INSERT INTO upchaar_emergency (patient_id, patient_name, room_id, doctor_id, doctor_name, is_doctor_call, status)
+          VALUES (${payload.patientId}, ${payload.patientName}, ${payload.roomId}, ${payload.doctorId}, ${payload.doctorName}, ${payload.isDoctorCall}, 'ACTIVE');
         `;
       }
     } catch (e) {
@@ -85,7 +91,7 @@ export default async function handler(req, res) {
     return res.status(200).json({ success: true, emergency: payload });
   }
 
-  // DELETE /api/emergency - Dismiss or clear active emergency call
+  // DELETE /api/emergency - Dismiss or clear active call
   if (req.method === 'DELETE') {
     inMemoryEmergency = null;
     try {
