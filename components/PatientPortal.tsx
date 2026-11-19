@@ -824,12 +824,6 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
                 bc.postMessage(emgPayload);
                 bc.close();
                 localStorage.setItem('upchaar_last_emergency', JSON.stringify(emgPayload));
-                
-                fetch('/api/video/emergency-request', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ doctorId: 'DR101', patientName: user.name, roomId: emgRoomId })
-                }).catch(() => {});
 
                 fetch('/api/emergency', {
                   method: 'POST',
