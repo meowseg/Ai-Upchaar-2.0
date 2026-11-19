@@ -1,7 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  PhoneOff, Clock, FileText, CheckCircle, Stethoscope, AlertTriangle,
-  Maximize2, Minimize2, ExternalLink, ShieldCheck, ChevronRight, ChevronLeft
+  Mic, MicOff, Video as VideoIcon, VideoOff, PhoneOff, Clock, FileText,
+  CheckCircle, Stethoscope, AlertTriangle, Maximize2, Minimize2,
+  ShieldCheck, ChevronRight, Volume2, VolumeX, Copy, Check, Users, RefreshCw
 } from 'lucide-react';
 import { ActiveVideoSession, User, UserRole } from '../types';
 
@@ -12,9 +13,27 @@ interface VideoCallProps {
 }
 
 export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEndCall }) => {
+  const localVideoRef = useRef<HTMLVideoElement>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement>(null);
+
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
+  const signalingChannelRef = useRef<BroadcastChannel | null>(null);
+  const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
+  const heartbeatTimerRef = useRef<any>(null);
+
+  // States
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'INITIALIZING' | 'WAITING_PEER' | 'CONNECTING' | 'CONNECTED'>('INITIALIZING');
+  const [peerName, setPeerName] = useState<string>('');
+  const [isMuted, setIsMuted] = useState(false);
+  const [isVideoOff, setIsVideoOff] = useState(false);
   const [callDuration, setCallDuration] = useState(0);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+  const [hasCopiedRoom, setHasCopiedRoom] = useState(false);
+  const [mediaError, setMediaError] = useState<string | null>(null);
 
   // Doctor clinical notes & prescription states
   const [doctorNotes, setDoctorNotes] = useState('');
@@ -26,14 +45,9 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
     ? (session.patientName || 'Patient')
     : (session.doctorName || 'Dr. A. Sharma');
 
-  // Sanitize room ID for Jitsi Meet URL
   const cleanRoomCode = (session.roomId || 'upchaar-consultation').replace(/[^a-zA-Z0-9_-]/g, '');
-  const displayName = encodeURIComponent(currentUser.name || (isDoctor ? 'Doctor' : 'Patient'));
 
-  // Jitsi Meet HD Room URL with pre-configured audio/video and user identity
-  const jitsiRoomUrl = `https://meet.jit.si/PraanSewa-${cleanRoomCode}#config.startWithAudioMuted=false&config.startWithVideoMuted=false&config.prejoinPageEnabled=false&userInfo.displayName="${displayName}"`;
-
-  // Call duration timer
+  // 1. Call duration timer (runs once connected or in-call)
   useEffect(() => {
     const timer = setInterval(() => {
       setCallDuration(prev => prev + 1);
@@ -45,6 +59,273 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
+  };
+
+  // 2. Broadcast signaling helper (BroadcastChannel + LocalStorage fallback for maximum cross-tab compatibility)
+  const sendSignal = (data: any) => {
+    const payload = {
+      ...data,
+      senderId: currentUser.id,
+      senderRole: currentUser.role,
+      senderName: currentUser.name,
+      room: cleanRoomCode,
+      timestamp: Date.now()
+    };
+
+    // BroadcastChannel
+    if (signalingChannelRef.current) {
+      try {
+        signalingChannelRef.current.postMessage(payload);
+      } catch (e) {
+        console.warn('BroadcastChannel postMessage error:', e);
+      }
+    }
+
+    // LocalStorage event fallback
+    try {
+      localStorage.setItem(`praansewa_signal_${cleanRoomCode}`, JSON.stringify(payload));
+    } catch (e) {}
+  };
+
+  // 3. Initialize Local Media (Camera & Mic) and PeerConnection
+  useEffect(() => {
+    let isCancelled = false;
+
+    const startLocalMedia = async () => {
+      try {
+        setConnectionStatus('INITIALIZING');
+        setMediaError(null);
+
+        // Request HD camera & mic with optimal constraints
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            width: { ideal: 1280, max: 1920 },
+            height: { ideal: 720, max: 1080 },
+            frameRate: { ideal: 30 }
+          },
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
+
+        if (isCancelled) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+
+        localStreamRef.current = stream;
+        setLocalStream(stream);
+
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+        }
+
+        // Initialize WebRTC PeerConnection with Google STUN servers
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' }
+          ]
+        });
+
+        peerConnectionRef.current = pc;
+
+        // Add local tracks to PeerConnection
+        stream.getTracks().forEach(track => {
+          pc.addTrack(track, stream);
+        });
+
+        // Remote track received handler
+        pc.ontrack = (event) => {
+          console.log('✅ Remote track received:', event.streams);
+          if (event.streams && event.streams[0]) {
+            setRemoteStream(event.streams[0]);
+            setConnectionStatus('CONNECTED');
+            if (remoteVideoRef.current) {
+              remoteVideoRef.current.srcObject = event.streams[0];
+              remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+            }
+          }
+        };
+
+        // ICE Candidate generated -> broadcast to peer
+        pc.onicecandidate = (event) => {
+          if (event.candidate) {
+            sendSignal({
+              type: 'ICE_CANDIDATE',
+              candidate: event.candidate.toJSON()
+            });
+          }
+        };
+
+        pc.onconnectionstatechange = () => {
+          console.log('WebRTC Connection state:', pc.connectionState);
+          if (pc.connectionState === 'connected') {
+            setConnectionStatus('CONNECTED');
+          } else if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+            setConnectionStatus('WAITING_PEER');
+          }
+        };
+
+        // Setup Signaling Channel
+        const channel = new BroadcastChannel(`praansewa_call_${cleanRoomCode}`);
+        signalingChannelRef.current = channel;
+
+        const handleIncomingSignal = async (data: any) => {
+          if (!data || data.senderRole === currentUser.role || data.room !== cleanRoomCode) {
+            return;
+          }
+
+          if (data.senderName) {
+            setPeerName(data.senderName);
+          }
+
+          try {
+            if (data.type === 'PING') {
+              // Peer is active in room
+              if (connectionStatus === 'WAITING_PEER') {
+                setConnectionStatus('CONNECTING');
+              }
+
+              // Doctor acts as polite offerer
+              if (isDoctor && pc.signalingState === 'stable') {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                sendSignal({
+                  type: 'OFFER',
+                  sdp: offer.sdp
+                });
+              }
+            } else if (data.type === 'OFFER' && !isDoctor) {
+              console.log('Received WebRTC Offer, sending Answer...');
+              setConnectionStatus('CONNECTING');
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'offer', sdp: data.sdp }));
+
+              // Process any queued ICE candidates
+              while (iceQueueRef.current.length > 0) {
+                const c = iceQueueRef.current.shift();
+                if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+              }
+
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              sendSignal({
+                type: 'ANSWER',
+                sdp: answer.sdp
+              });
+            } else if (data.type === 'ANSWER' && isDoctor) {
+              console.log('Received WebRTC Answer, setting remote description...');
+              await pc.setRemoteDescription(new RTCSessionDescription({ type: 'answer', sdp: data.sdp }));
+
+              // Process any queued ICE candidates
+              while (iceQueueRef.current.length > 0) {
+                const c = iceQueueRef.current.shift();
+                if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+              }
+
+              setConnectionStatus('CONNECTED');
+            } else if (data.type === 'ICE_CANDIDATE' && data.candidate) {
+              if (pc.remoteDescription && pc.remoteDescription.type) {
+                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+              } else {
+                iceQueueRef.current.push(data.candidate);
+              }
+            } else if (data.type === 'HANGUP') {
+              setConnectionStatus('WAITING_PEER');
+              setRemoteStream(null);
+            }
+          } catch (err) {
+            console.warn('Signaling processing error:', err);
+          }
+        };
+
+        channel.onmessage = (e) => handleIncomingSignal(e.data);
+
+        // Storage listener for cross-window / tab fallback
+        const handleStorageSignal = (e: StorageEvent) => {
+          if (e.key === `praansewa_signal_${cleanRoomCode}` && e.newValue) {
+            try {
+              const parsed = JSON.parse(e.newValue);
+              handleIncomingSignal(parsed);
+            } catch (err) {}
+          }
+        };
+        window.addEventListener('storage', handleStorageSignal);
+
+        // Send periodic PING heartbeat so joining peers immediately discover each other
+        setConnectionStatus('WAITING_PEER');
+        sendSignal({ type: 'PING' });
+
+        heartbeatTimerRef.current = setInterval(() => {
+          sendSignal({ type: 'PING' });
+        }, 1500);
+
+      } catch (err: any) {
+        console.error('Error starting video consultation hardware:', err);
+        setMediaError(err.message || 'Unable to access Camera & Microphone. Please ensure permissions are granted.');
+      }
+    };
+
+    startLocalMedia();
+
+    return () => {
+      isCancelled = true;
+      if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
+      if (signalingChannelRef.current) signalingChannelRef.current.close();
+
+      sendSignal({ type: 'HANGUP' });
+
+      if (peerConnectionRef.current) {
+        peerConnectionRef.current.close();
+        peerConnectionRef.current = null;
+      }
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach(t => t.stop());
+        localStreamRef.current = null;
+      }
+    };
+  }, [cleanRoomCode]);
+
+  // Keep remote video attached to remoteStream if it changes
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.play().catch(e => console.warn('Remote video play error:', e));
+    }
+  }, [remoteStream]);
+
+  // Toggle Mute
+  const toggleMute = () => {
+    if (localStreamRef.current) {
+      const audioTracks = localStreamRef.current.getAudioTracks();
+      audioTracks.forEach(t => {
+        t.enabled = isMuted;
+      });
+      setIsMuted(!isMuted);
+    }
+  };
+
+  // Toggle Video
+  const toggleVideo = () => {
+    if (localStreamRef.current) {
+      const videoTracks = localStreamRef.current.getVideoTracks();
+      videoTracks.forEach(t => {
+        t.enabled = isVideoOff;
+      });
+      setIsVideoOff(!isVideoOff);
+    }
+  };
+
+  // Copy Room Code
+  const handleCopyRoom = () => {
+    navigator.clipboard.writeText(cleanRoomCode);
+    setHasCopiedRoom(true);
+    setTimeout(() => setHasCopiedRoom(false), 2000);
   };
 
   const handleEndCall = () => {
@@ -96,9 +377,13 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
                   <AlertTriangle size={10} /> Emergency SOS
                 </span>
               ) : (
-                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold uppercase px-2 py-0.5 rounded-full flex items-center gap-1.5">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
-                  HD Video Room Active
+                <span className={`text-[10px] font-bold uppercase px-2 py-0.5 rounded-full flex items-center gap-1.5 ${
+                  connectionStatus === 'CONNECTED'
+                    ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                    : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                }`}>
+                  <span className={`w-1.5 h-1.5 rounded-full ${connectionStatus === 'CONNECTED' ? 'bg-emerald-400 animate-ping' : 'bg-amber-400 animate-pulse'}`} />
+                  {connectionStatus === 'CONNECTED' ? 'Live Connected' : 'Waiting for Peer'}
                 </span>
               )}
             </div>
@@ -107,7 +392,14 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
               <span>•</span>
               <span>Doctor: <strong className="text-emerald-300">{isDoctor ? currentUser.name : (session.doctorName || 'Dr. A. Sharma')}</strong></span>
               <span>•</span>
-              <span className="font-mono text-emerald-400 font-semibold">Room: {cleanRoomCode}</span>
+              <button
+                onClick={handleCopyRoom}
+                className="font-mono text-emerald-400 hover:text-emerald-300 flex items-center gap-1 cursor-pointer bg-slate-800 px-1.5 py-0.5 rounded text-[11px]"
+                title="Click to copy room code"
+              >
+                <span>Room: {cleanRoomCode}</span>
+                {hasCopiedRoom ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+              </button>
             </p>
           </div>
         </div>
@@ -118,17 +410,6 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
             <Clock size={13} className="text-emerald-400" />
             <span>{formatDuration(callDuration)}</span>
           </div>
-
-          {/* External Tab Opener */}
-          <a
-            href={jitsiRoomUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="p-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 transition cursor-pointer"
-            title="Open Video Call in New Window"
-          >
-            <ExternalLink size={16} />
-          </a>
 
           {/* Toggle Clinical Sidebar */}
           <button
@@ -165,14 +446,118 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
 
       {/* ───────────────── MAIN TELEHEALTH WORKSPACE ───────────────── */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-        {/* Full-Screen Jitsi Meet HD Telehealth Video Room */}
-        <div className="flex-1 w-full h-full relative bg-black">
-          <iframe
-            src={jitsiRoomUrl}
-            allow="camera; microphone; fullscreen; display-capture; autoplay; clipboard-write"
-            className="w-full h-full border-0"
-            title="Live Telehealth Video Call"
-          />
+        {/* Main Video Call Display Area */}
+        <div className="flex-1 w-full h-full relative bg-slate-950 flex flex-col items-center justify-center p-3 sm:p-5">
+          {mediaError ? (
+            <div className="bg-red-950/80 border border-red-800 text-red-200 p-6 rounded-2xl max-w-md text-center space-y-3">
+              <AlertTriangle size={36} className="text-red-400 mx-auto" />
+              <h3 className="font-bold text-base text-white">Camera Access Error</h3>
+              <p className="text-xs text-red-300">{mediaError}</p>
+              <button
+                onClick={() => window.location.reload()}
+                className="mt-2 px-4 py-2 bg-red-700 hover:bg-red-600 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Reload & Retry Camera
+              </button>
+            </div>
+          ) : (
+            <div className="w-full h-full relative rounded-2xl overflow-hidden bg-slate-900 border border-slate-800 flex items-center justify-center shadow-2xl">
+              {/* REMOTE PEER VIDEO (Full Screen / Main Window) */}
+              <video
+                ref={remoteVideoRef}
+                autoPlay
+                playsInline
+                className={`w-full h-full object-cover transition-opacity duration-500 ${
+                  remoteStream ? 'opacity-100' : 'opacity-0 absolute'
+                }`}
+              />
+
+              {/* WAITING SCREEN (When Peer Has Not Joined Yet) */}
+              {!remoteStream && (
+                <div className="flex flex-col items-center justify-center p-6 text-center space-y-4 max-w-md">
+                  <div className="w-20 h-20 rounded-full bg-emerald-500/10 border-2 border-dashed border-emerald-500/40 flex items-center justify-center text-emerald-400 animate-pulse">
+                    <Users size={32} />
+                  </div>
+                  <div className="space-y-1">
+                    <h3 className="text-lg font-bold text-white">
+                      Waiting for {otherRoleName} to join...
+                    </h3>
+                    <p className="text-xs text-slate-400">
+                      Room code: <span className="font-mono text-emerald-400 font-bold">{cleanRoomCode}</span>
+                    </p>
+                    <p className="text-[11px] text-slate-500">
+                      As soon as the other participant opens the consultation, live HD video will connect automatically.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2">
+                    <button
+                      onClick={handleCopyRoom}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {hasCopiedRoom ? <Check size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                      <span>{hasCopiedRoom ? 'Copied Room Code!' : 'Copy Room Code'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* LOCAL SELF WEBCAM (Picture-in-Picture Floating Window) */}
+              <div className="absolute top-4 right-4 w-36 sm:w-52 aspect-video rounded-xl overflow-hidden bg-slate-950 border-2 border-emerald-500/60 shadow-2xl z-20 group">
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className={`w-full h-full object-cover transform -scale-x-100 ${isVideoOff ? 'opacity-0' : 'opacity-100'}`}
+                />
+                {isVideoOff && (
+                  <div className="absolute inset-0 bg-slate-900 flex flex-col items-center justify-center text-slate-400 text-[10px] font-bold">
+                    <VideoOff size={20} className="mb-1 text-slate-500" />
+                    <span>Camera Off</span>
+                  </div>
+                )}
+                <div className="absolute bottom-1.5 left-2 bg-black/70 backdrop-blur-sm px-2 py-0.5 rounded text-[10px] font-bold text-slate-200">
+                  {currentUser.name} (You)
+                </div>
+              </div>
+
+              {/* CALL CONTROL BAR (Floating Bottom Island) */}
+              <div className="absolute bottom-6 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-slate-900/90 backdrop-blur-md px-5 py-3 rounded-2xl border border-slate-700/80 shadow-2xl z-30">
+                {/* Mute/Unmute */}
+                <button
+                  onClick={toggleMute}
+                  className={`p-3 rounded-xl transition cursor-pointer ${
+                    isMuted ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  }`}
+                  title={isMuted ? 'Unmute Microphone' : 'Mute Microphone'}
+                >
+                  {isMuted ? <MicOff size={20} /> : <Mic size={20} />}
+                </button>
+
+                {/* Camera Toggle */}
+                <button
+                  onClick={toggleVideo}
+                  className={`p-3 rounded-xl transition cursor-pointer ${
+                    isVideoOff ? 'bg-red-600 text-white' : 'bg-slate-800 text-slate-200 hover:bg-slate-700'
+                  }`}
+                  title={isVideoOff ? 'Turn Camera On' : 'Turn Camera Off'}
+                >
+                  {isVideoOff ? <VideoOff size={20} /> : <VideoIcon size={20} />}
+                </button>
+
+                {/* End Call Button */}
+                <button
+                  onClick={handleEndCall}
+                  className="px-5 py-3 bg-red-600 hover:bg-red-700 text-white rounded-xl text-xs font-black flex items-center gap-2 shadow-lg shadow-red-600/40 transition cursor-pointer"
+                  title="Hang Up and Finish Consultation"
+                >
+                  <PhoneOff size={18} />
+                  <span>Leave Consultation</span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ───────────────── CLINICAL EHR SIDE PANEL ───────────────── */}
@@ -190,7 +575,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
               </div>
               <button
                 onClick={() => setIsSidebarOpen(false)}
-                className="text-slate-500 hover:text-white p-1 rounded-lg"
+                className="text-slate-500 hover:text-white p-1 rounded-lg cursor-pointer"
                 title="Collapse Sidebar"
               >
                 <ChevronRight size={18} />
