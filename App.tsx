@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Phone, Stethoscope, User as UserIcon, LayoutGrid, LogOut, Loader2, Key, Zap, Sparkles, Shield, Video } from 'lucide-react';
 import PatientPortal from './components/PatientPortal';
 import DoctorDashboard from './components/DoctorDashboard';
@@ -6,8 +6,7 @@ import LoginScreen from './components/LoginScreen';
 import ApiKeyModal from './components/ApiKeyModal';
 import VideoCall from './components/VideoCall';
 import Logo from './components/Logo';
-import { MOCK_CASES, MOCK_STATS, MOCK_PATIENTS, MOCK_APPOINTMENTS } from './services/mockData';
-import { MedicalCase, CaseStatus, CaseSeverity, User, UserRole, Appointment, ActiveVideoSession } from './types';
+import { MedicalCase, CaseStatus, CaseSeverity, User, UserRole, Appointment, ActiveVideoSession, PatientProfile } from './types';
 import { logout, getSession } from './services/authService';
 import { getAIConfig } from './services/aiService';
 
@@ -19,42 +18,19 @@ function App() {
   const [aiConfig, setAiConfig] = useState(getAIConfig());
   const [activeVideoSession, setActiveVideoSession] = useState<ActiveVideoSession | null>(null);
 
-  // Helper to ensure default / emergency cases and user-submitted cases are merged without duplicate IDs
-  const mergeCasesWithMocks = (savedCases: MedicalCase[]): MedicalCase[] => {
-    if (!Array.isArray(savedCases)) return MOCK_CASES;
-    const seen = new Set<string>();
-    const result: MedicalCase[] = [];
-
-    // Add unique saved cases (preventing duplicate keys from repeated test sessions)
-    for (const c of savedCases) {
-      if (c && c.id && !seen.has(c.id)) {
-        seen.add(c.id);
-        result.push(c);
-      }
-    }
-
-    // Add default mock cases if not already present
-    for (const mc of MOCK_CASES) {
-      if (!seen.has(mc.id)) {
-        seen.add(mc.id);
-        result.push(mc);
-      }
-    }
-    return result;
-  };
-
-
-  // Persistent States across sessions & tabs
+  // Persistent States across sessions & tabs - clean of mock data
   const [cases, setCases] = useState<MedicalCase[]>(() => {
     try {
       const saved = localStorage.getItem('ai_upchaar_cases');
       if (saved) {
         const parsed = JSON.parse(saved);
-        return mergeCasesWithMocks(parsed);
+        if (Array.isArray(parsed)) {
+          return parsed.filter(c => c && c.id && !c.id.startsWith('CS-2023-') && !c.id.startsWith('CS-2026-LIVE-'));
+        }
       }
-      return MOCK_CASES;
+      return [];
     } catch (e) {
-      return MOCK_CASES;
+      return [];
     }
   });
 
@@ -63,15 +39,41 @@ function App() {
       const saved = localStorage.getItem('ai_upchaar_appointments');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          return parsed.filter(a => a && a.id && !a.id.startsWith('apt-101') && !a.id.startsWith('apt-102') && !a.id.startsWith('APT-'));
+        }
       }
-      return MOCK_APPOINTMENTS;
+      return [];
     } catch (e) {
-      return MOCK_APPOINTMENTS;
+      return [];
     }
   });
 
-  const [stats, setStats] = useState(MOCK_STATS);
+  // Dynamically derived stats from live cases
+  const stats = useMemo(() => ({
+    totalPatients: new Set(cases.map(c => c.patientId)).size,
+    casesResolved: cases.filter(c => c.status === CaseStatus.COMPLETED || c.status === CaseStatus.APPROVED).length,
+    activeTriage: cases.filter(c => c.status === CaseStatus.OPEN || c.status === CaseStatus.PENDING_APPROVAL).length,
+    criticalPending: cases.filter(c => c.severity === CaseSeverity.CRITICAL && c.status !== CaseStatus.COMPLETED).length,
+    deliveriesInProgress: cases.filter(c => c.status === CaseStatus.APPROVED).length
+  }), [cases]);
+
+  // Dynamically derived patient profiles from live cases
+  const dynamicPatients: PatientProfile[] = useMemo(() => {
+    const map = new Map<string, PatientProfile>();
+    for (const c of cases) {
+      if (c.patientId && !map.has(c.patientId)) {
+        map.set(c.patientId, {
+          id: c.patientId,
+          name: c.patientName,
+          age: 30,
+          gender: 'Male',
+          location: c.patientLocation?.address || 'India'
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [cases]);
 
   // Sync to localStorage
   useEffect(() => {
@@ -115,30 +117,14 @@ function App() {
           fetch('/api/appointments').then(r => r.ok ? r.json() : null)
         ]);
 
-        if (Array.isArray(casesRes) && casesRes.length > 0) {
-          setCases(prev => {
-            const seen = new Set<string>();
-            const combined: MedicalCase[] = [];
-            // DB cases first
-            for (const c of casesRes) {
-              if (c && c.id && !seen.has(c.id)) {
-                seen.add(c.id);
-                combined.push(c);
-              }
-            }
-            // Keep any locally created ones that might be in flight
-            for (const p of prev) {
-              if (p && p.id && !seen.has(p.id)) {
-                seen.add(p.id);
-                combined.push(p);
-              }
-            }
-            return combined;
-          });
+        if (Array.isArray(casesRes)) {
+          const realCases = casesRes.filter((c: any) => c && c.id && !c.id.startsWith('CS-2023-') && !c.id.startsWith('CS-2026-LIVE-'));
+          setCases(realCases);
         }
 
-        if (Array.isArray(apptsRes) && apptsRes.length > 0) {
-          setAppointments(apptsRes);
+        if (Array.isArray(apptsRes)) {
+          const realAppts = apptsRes.filter((a: any) => a && a.id && !a.id.startsWith('apt-101') && !a.id.startsWith('apt-102') && !a.id.startsWith('APT-'));
+          setAppointments(realAppts);
         }
       } catch (err) {
         console.warn('Neon DB sync error (fallback to local state):', err);
@@ -155,11 +141,6 @@ function App() {
 
   const handleNewCase = async (newCase: MedicalCase) => {
     setCases(prev => [newCase, ...prev.filter(c => c.id !== newCase.id)]);
-    setStats(prev => ({
-      ...prev,
-      totalCases: prev.totalCases + 1,
-      criticalPending: newCase.severity === 'CRITICAL' ? prev.criticalPending + 1 : prev.criticalPending
-    }));
 
     // Persist to Neon DB
     try {
@@ -267,10 +248,6 @@ function App() {
       return c;
     }));
 
-    if (status === 'APPROVED') {
-      setStats(prev => ({ ...prev, deliveriesInProgress: prev.deliveriesInProgress + 1 }));
-    }
-
     // Persist to Neon DB
     try {
       await fetch('/api/cases', {
@@ -308,7 +285,7 @@ function App() {
     try {
       localStorage.removeItem('ai_upchaar_cases');
     } catch (e) {}
-    setCases(MOCK_CASES);
+    setCases([]);
 
     try {
       await fetch('/api/cases?reset=true', { method: 'DELETE' });
@@ -443,7 +420,7 @@ function App() {
             user={currentUser}
             cases={cases}
             appointments={appointments}
-            patients={MOCK_PATIENTS}
+            patients={dynamicPatients}
             stats={stats}
             onUpdateStatus={handleUpdateStatus}
             onUpdateAppointment={handleUpdateAppointment}

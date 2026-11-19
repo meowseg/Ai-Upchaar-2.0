@@ -76,7 +76,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLoginSuccess, onOpenKeyModa
 
             {activeRole === UserRole.DOCTOR && (
               <div className="bg-white/10 p-4 rounded-xl text-sm text-white/80 backdrop-blur-sm border border-white/10">
-                <span className="font-bold block mb-1 text-white">Demo Credentials:</span>
+                <span className="font-bold block mb-1 text-white">Doctor Credentials:</span>
                 <div className="flex justify-between font-mono text-xs opacity-80">
                   <span>ID: DR101</span>
                   <span>Pass: password123</span>
