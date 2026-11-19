@@ -1,6 +1,13 @@
-// In-memory + persistent emergency call signal store for cross-device notification
+import { neon } from '@neondatabase/serverless';
 
-let activeEmergency = null;
+function getDb() {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl) return null;
+  return neon(dbUrl);
+}
+
+// In-memory fallback
+let inMemoryEmergency = null;
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -11,37 +18,83 @@ export default async function handler(req, res) {
     return res.status(200).end();
   }
 
-  // GET /api/emergency - Check if there is an active emergency call in last 5 minutes
+  const sql = getDb();
+
+  // GET /api/emergency - Check if there is an active emergency call in the last 5 minutes
   if (req.method === 'GET') {
-    if (activeEmergency) {
-      const ageMs = Date.now() - new Date(activeEmergency.timestamp).getTime();
-      if (ageMs > 300000) { // 5 minutes expiration
-        activeEmergency = null;
+    try {
+      if (sql) {
+        const rows = await sql`
+          SELECT 
+            patient_id as "patientId", 
+            patient_name as "patientName", 
+            room_id as "roomId", 
+            created_at as "timestamp"
+          FROM upchaar_emergency 
+          WHERE status = 'ACTIVE' 
+            AND created_at > NOW() - INTERVAL '5 minutes'
+          ORDER BY created_at DESC 
+          LIMIT 1;
+        `;
+        if (rows && rows.length > 0) {
+          return res.status(200).json({ emergency: rows[0] });
+        }
+      }
+    } catch (e) {
+      console.warn('Neon DB query error in emergency.js, falling back to in-memory:', e.message);
+    }
+
+    // In-memory fallback
+    if (inMemoryEmergency) {
+      const ageMs = Date.now() - new Date(inMemoryEmergency.timestamp).getTime();
+      if (ageMs > 300000) {
+        inMemoryEmergency = null;
       }
     }
-    return res.status(200).json({ emergency: activeEmergency });
+    return res.status(200).json({ emergency: inMemoryEmergency });
   }
 
-  // POST /api/emergency - Trigger emergency call from patient
+  // POST /api/emergency - Broadcast an emergency SOS call from patient
   if (req.method === 'POST') {
     const { patientId, patientName, roomId } = req.body || {};
     if (!roomId) {
       return res.status(400).json({ error: 'roomId is required' });
     }
 
-    activeEmergency = {
+    const payload = {
       patientId: patientId || 'P-UNKNOWN',
       patientName: patientName || 'Emergency Patient',
-      roomId: roomId,
+      roomId: roomId.trim(),
       timestamp: new Date().toISOString()
     };
+    inMemoryEmergency = payload;
 
-    return res.status(200).json({ success: true, emergency: activeEmergency });
+    try {
+      if (sql) {
+        // Resolve older active emergencies and insert new one
+        await sql`UPDATE upchaar_emergency SET status = 'RESOLVED' WHERE status = 'ACTIVE';`;
+        await sql`
+          INSERT INTO upchaar_emergency (patient_id, patient_name, room_id, status)
+          VALUES (${payload.patientId}, ${payload.patientName}, ${payload.roomId}, 'ACTIVE');
+        `;
+      }
+    } catch (e) {
+      console.warn('Neon DB insert error in emergency.js:', e.message);
+    }
+
+    return res.status(200).json({ success: true, emergency: payload });
   }
 
-  // DELETE /api/emergency - Dismiss or clear emergency call
+  // DELETE /api/emergency - Dismiss or clear active emergency call
   if (req.method === 'DELETE') {
-    activeEmergency = null;
+    inMemoryEmergency = null;
+    try {
+      if (sql) {
+        await sql`UPDATE upchaar_emergency SET status = 'RESOLVED' WHERE status = 'ACTIVE';`;
+      }
+    } catch (e) {
+      console.warn('Neon DB delete error in emergency.js:', e.message);
+    }
     return res.status(200).json({ success: true, message: 'Emergency cleared' });
   }
 

@@ -21,6 +21,9 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
   const signalingChannelRef = useRef<BroadcastChannel | null>(null);
   const iceQueueRef = useRef<RTCIceCandidateInit[]>([]);
   const heartbeatTimerRef = useRef<any>(null);
+  const processedSignalIds = useRef<Set<string | number>>(new Set());
+  const lastSeenSignalId = useRef<number>(0);
+  const handleIncomingSignalRef = useRef<((data: any) => Promise<void>) | null>(null);
 
   // States
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -61,7 +64,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
     return `${m}:${s}`;
   };
 
-  // 2. Broadcast signaling helper (BroadcastChannel + LocalStorage fallback for maximum cross-tab compatibility)
+  // 2. Broadcast signaling helper (BroadcastChannel + LocalStorage + Serverless DB Signaling API)
   const sendSignal = (data: any) => {
     const payload = {
       ...data,
@@ -72,7 +75,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
       timestamp: Date.now()
     };
 
-    // BroadcastChannel
+    // 1. BroadcastChannel (instant same-session delivery)
     if (signalingChannelRef.current) {
       try {
         signalingChannelRef.current.postMessage(payload);
@@ -81,10 +84,24 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
       }
     }
 
-    // LocalStorage event fallback
+    // 2. LocalStorage event (same-profile cross-window fallback)
     try {
       localStorage.setItem(`praansewa_signal_${cleanRoomCode}`, JSON.stringify(payload));
     } catch (e) {}
+
+    // 3. Server HTTP API (/api/signal) for Cross-Browser / Incognito / Cross-Device Signaling
+    fetch('/api/signal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        room: cleanRoomCode,
+        senderId: currentUser.id,
+        senderRole: currentUser.role,
+        senderName: currentUser.name,
+        type: data.type,
+        payload: payload
+      })
+    }).catch(() => {});
   };
 
   // 3. Initialize Local Media (Camera & Mic) and PeerConnection
@@ -176,9 +193,19 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
         signalingChannelRef.current = channel;
 
         const handleIncomingSignal = async (data: any) => {
-          if (!data || data.senderRole === currentUser.role || data.room !== cleanRoomCode) {
-            return;
-          }
+          if (!data) return;
+
+          // Reject signals from self or other rooms
+          if (data.senderId && data.senderId === currentUser.id) return;
+          if (data.senderRole && data.senderRole === currentUser.role) return;
+          if (data.room && data.room.replace(/[^a-zA-Z0-9_-]/g, '') !== cleanRoomCode) return;
+
+          // Deduplicate signals
+          const sigKey = data.id 
+            ? String(data.id)
+            : `${data.type}_${data.senderRole || ''}_${data.timestamp || ''}_${data.sdp ? data.sdp.slice(0, 20) : ''}_${data.candidate?.candidate ? data.candidate.candidate.slice(0, 20) : ''}`;
+          if (processedSignalIds.current.has(sigKey)) return;
+          processedSignalIds.current.add(sigKey);
 
           if (data.senderName) {
             setPeerName(data.senderName);
@@ -191,7 +218,20 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
                 setConnectionStatus('CONNECTING');
               }
 
-              // Doctor acts as polite offerer
+              // Doctor acts as offerer
+              if (isDoctor && pc.signalingState === 'stable') {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                sendSignal({
+                  type: 'OFFER',
+                  sdp: offer.sdp
+                });
+              } else if (!isDoctor) {
+                // Patient acknowledges doctor's presence
+                sendSignal({ type: 'PING_ACK' });
+              }
+            } else if (data.type === 'PING_ACK') {
+              // Received peer acknowledgement
               if (isDoctor && pc.signalingState === 'stable') {
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
@@ -208,7 +248,11 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
               // Process any queued ICE candidates
               while (iceQueueRef.current.length > 0) {
                 const c = iceQueueRef.current.shift();
-                if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+                if (c) {
+                  try {
+                    await pc.addIceCandidate(new RTCIceCandidate(c));
+                  } catch (e) {}
+                }
               }
 
               const answer = await pc.createAnswer();
@@ -224,13 +268,19 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
               // Process any queued ICE candidates
               while (iceQueueRef.current.length > 0) {
                 const c = iceQueueRef.current.shift();
-                if (c) await pc.addIceCandidate(new RTCIceCandidate(c));
+                if (c) {
+                  try {
+                    await pc.addIceCandidate(new RTCIceCandidate(c));
+                  } catch (e) {}
+                }
               }
 
               setConnectionStatus('CONNECTED');
             } else if (data.type === 'ICE_CANDIDATE' && data.candidate) {
               if (pc.remoteDescription && pc.remoteDescription.type) {
-                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (e) {}
               } else {
                 iceQueueRef.current.push(data.candidate);
               }
@@ -243,6 +293,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
           }
         };
 
+        handleIncomingSignalRef.current = handleIncomingSignal;
         channel.onmessage = (e) => handleIncomingSignal(e.data);
 
         // Storage listener for cross-window / tab fallback
@@ -274,6 +325,7 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
 
     return () => {
       isCancelled = true;
+      handleIncomingSignalRef.current = null;
       if (heartbeatTimerRef.current) clearInterval(heartbeatTimerRef.current);
       if (signalingChannelRef.current) signalingChannelRef.current.close();
 
@@ -290,6 +342,50 @@ export const VideoCall: React.FC<VideoCallProps> = ({ session, currentUser, onEn
       }
     };
   }, [cleanRoomCode]);
+
+  // 4. Server Polling Effect for Cross-Browser / Incognito / Cross-Device Signaling
+  useEffect(() => {
+    let isSubscribed = true;
+
+    const pollServerSignals = async () => {
+      if (!handleIncomingSignalRef.current) return;
+      try {
+        const queryParams = new URLSearchParams({
+          room: cleanRoomCode,
+          sinceId: String(lastSeenSignalId.current),
+          excludeRole: currentUser.role || '',
+          excludeId: currentUser.id || ''
+        });
+
+        const res = await fetch(`/api/signal?${queryParams.toString()}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!isSubscribed) return;
+
+        if (data && Array.isArray(data.signals)) {
+          for (const item of data.signals) {
+            if (item.id && typeof item.id === 'number' && item.id > lastSeenSignalId.current) {
+              lastSeenSignalId.current = item.id;
+            }
+            const sigPayload = item.payload && item.payload.type ? { ...item.payload, id: item.id } : item;
+            if (handleIncomingSignalRef.current) {
+              await handleIncomingSignalRef.current(sigPayload);
+            }
+          }
+        }
+
+        if (data && typeof data.lastId === 'number' && data.lastId > lastSeenSignalId.current) {
+          lastSeenSignalId.current = data.lastId;
+        }
+      } catch (err) {}
+    };
+
+    const pollInterval = setInterval(pollServerSignals, 800);
+    return () => {
+      isSubscribed = false;
+      clearInterval(pollInterval);
+    };
+  }, [cleanRoomCode, currentUser.role, currentUser.id]);
 
   // Keep remote video attached to remoteStream if it changes
   useEffect(() => {

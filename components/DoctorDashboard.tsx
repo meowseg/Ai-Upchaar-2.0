@@ -113,7 +113,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
         };
 
         checkServerEmergency();
-        const emgInterval = setInterval(checkServerEmergency, 3000);
+        const emgInterval = setInterval(checkServerEmergency, 1200);
 
         return () => {
             if (bc) bc.close();
@@ -1094,6 +1094,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
             <div className="h-full flex flex-col md:flex-row bg-slate-50 overflow-hidden">
                 <div className="hidden md:flex h-full"><Sidebar /></div>
                 <div className="flex-1 overflow-hidden flex flex-col">
+                    <EmergencyBanner />
                     <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center animate-in fade-in slide-in-from-top-4 duration-500">
                         <div className="flex items-center gap-2">
                             <button className="md:hidden p-1.5 -ml-2 text-slate-500 hover:bg-slate-100 rounded-full transition" onClick={() => setCurrentView('ACTIVE_CASES')}>
@@ -1117,6 +1118,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
             <div className="h-full flex flex-col md:flex-row bg-slate-50 overflow-hidden">
                 <div className="hidden md:flex h-full"><Sidebar /></div>
                 <div className="flex-1 overflow-hidden flex flex-col pb-20 md:pb-0">
+                    <EmergencyBanner />
                     <div className="bg-white border-b border-slate-200 px-6 py-3 flex justify-between items-center animate-in fade-in slide-in-from-top-4 duration-500">
                         <div className="flex items-center gap-2">
                             <button className="md:hidden p-1.5 -ml-2 text-slate-500 hover:bg-slate-100 rounded-full transition" onClick={() => setCurrentView('ACTIVE_CASES')}>
@@ -1245,7 +1247,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                         <div className="hidden sm:flex items-center gap-2"><div className="p-1.5 bg-emerald-100 text-emerald-600 rounded-lg"><Truck size={16} /></div><div><p className="text-[10px] font-bold text-slate-500 uppercase">Deliveries</p><p className="text-sm font-black leading-none">{stats.deliveriesInProgress}</p></div></div>
                     </div>
                     <div className="flex items-center gap-3">
-                        <div className="hidden lg:flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+                        <div className="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
                             <input
                                 type="text"
                                 placeholder="Join Room by Code..."

@@ -57,6 +57,7 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
   const [triageResult, setTriageResult] = useState<TriageResult | null>(null);
   const [feedbackRating, setFeedbackRating] = useState(0);
   const [feedbackComment, setFeedbackComment] = useState('');
+  const [patientManualRoom, setPatientManualRoom] = useState('');
 
   // Doctor Tips Interaction State
   const [tipReactions, setTipReactions] = useState<Record<string, string>>({});
@@ -742,53 +743,98 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
           </div>
         </div>
 
-        <button 
-          onClick={async () => {
-            const emgRoomId = `emg-${Date.now().toString().slice(-6)}`;
-            try {
-              const emgPayload = {
-                type: 'EMERGENCY_CALL',
-                patientId: user.id,
-                patientName: user.name,
-                roomId: emgRoomId,
-                timestamp: new Date().toISOString()
-              };
-              const bc = new BroadcastChannel('upchaar_emergency_channel');
-              bc.postMessage(emgPayload);
-              bc.close();
-              localStorage.setItem('upchaar_last_emergency', JSON.stringify(emgPayload));
-              
-              fetch('/api/video/emergency-request', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ doctorId: 'DR101', patientName: user.name, roomId: emgRoomId })
-              }).catch(() => {});
+        <div className="flex flex-wrap items-center gap-3 z-20">
+          <button 
+            onClick={async () => {
+              const patientSlug = (user.name || 'patient').toLowerCase().replace(/[^a-z0-9]/g, '') || 'patient';
+              const emgRoomId = `emg-${patientSlug}`;
+              try {
+                const emgPayload = {
+                  type: 'EMERGENCY_CALL',
+                  patientId: user.id,
+                  patientName: user.name,
+                  roomId: emgRoomId,
+                  timestamp: new Date().toISOString()
+                };
+                const bc = new BroadcastChannel('upchaar_emergency_channel');
+                bc.postMessage(emgPayload);
+                bc.close();
+                localStorage.setItem('upchaar_last_emergency', JSON.stringify(emgPayload));
+                
+                fetch('/api/video/emergency-request', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ doctorId: 'DR101', patientName: user.name, roomId: emgRoomId })
+                }).catch(() => {});
 
-              fetch('/api/emergency', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ patientId: user.id, patientName: user.name, roomId: emgRoomId })
-              }).catch(() => {});
-            } catch (err) {}
+                fetch('/api/emergency', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ patientId: user.id, patientName: user.name, roomId: emgRoomId })
+                }).catch(() => {});
+              } catch (err) {}
 
-            if (onStartVideoCall) {
-              onStartVideoCall({
-                roomId: emgRoomId,
-                patientId: user.id,
-                patientName: user.name,
-                doctorId: 'DR101',
-                doctorName: 'Emergency Medical Officer',
-                isEmergency: true,
-                symptoms: ['Acute Emergency SOS']
-              });
-            } else {
-              alert("🚨 Emergency signal sent to Doctor!");
-            }
-          }}
-          className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full shadow-lg animate-pulse flex items-center gap-2 cursor-pointer z-20 shrink-0"
-        >
-          <Ambulance size={20} /> SOS Emergency Call
-        </button>
+              if (onStartVideoCall) {
+                onStartVideoCall({
+                  roomId: emgRoomId,
+                  patientId: user.id,
+                  patientName: user.name,
+                  doctorId: 'DR101',
+                  doctorName: 'Emergency Medical Officer',
+                  isEmergency: true,
+                  symptoms: ['Acute Emergency Video SOS Request'],
+                  diagnosis: 'Emergency Medical Consultation Requested'
+                });
+              } else {
+                alert("🚨 Emergency signal sent to Doctor!");
+              }
+            }}
+            className="bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-6 rounded-full shadow-lg animate-pulse flex items-center gap-2 cursor-pointer shrink-0"
+          >
+            <Ambulance size={20} /> SOS Emergency Call
+          </button>
+
+          {/* Direct Manual Room Join for Patient */}
+          <div className="flex items-center gap-1.5 bg-black/30 backdrop-blur-md px-3 py-1.5 rounded-full border border-white/20">
+            <input
+              type="text"
+              placeholder="Join room code..."
+              value={patientManualRoom}
+              onChange={(e) => setPatientManualRoom(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && patientManualRoom.trim() && onStartVideoCall) {
+                  onStartVideoCall({
+                    roomId: patientManualRoom.trim(),
+                    patientId: user.id,
+                    patientName: user.name,
+                    doctorId: 'DR101',
+                    doctorName: 'Dr. A. Sharma',
+                    isEmergency: false
+                  });
+                }
+              }}
+              className="px-2.5 py-1 text-xs bg-white/20 placeholder-white/60 text-white rounded-lg outline-none w-32 font-mono"
+            />
+            <button
+              onClick={() => {
+                if (patientManualRoom.trim() && onStartVideoCall) {
+                  onStartVideoCall({
+                    roomId: patientManualRoom.trim(),
+                    patientId: user.id,
+                    patientName: user.name,
+                    doctorId: 'DR101',
+                    doctorName: 'Dr. A. Sharma',
+                    isEmergency: false
+                  });
+                }
+              }}
+              disabled={!patientManualRoom.trim()}
+              className="px-2.5 py-1 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 text-white text-xs font-bold rounded-lg transition flex items-center gap-1 cursor-pointer"
+            >
+              <Video size={12} /> Join
+            </button>
+          </div>
+        </div>
 
         <div className="relative z-10 flex items-center gap-2 self-start md:self-auto">
           <div className="px-3.5 py-2 rounded-xl bg-white/10 backdrop-blur-md border border-white/20 text-xs font-semibold flex items-center gap-2 text-white">
