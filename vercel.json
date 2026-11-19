@@ -1,16 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
   "rewrites": [
     {
       "source": "/(.*)",
       "destination": "/index.html"
-    },
-    {
-      "source": "/(.*)",
-      "destination": {
-        "type": "service",
-        "service": "ai-upchaar-api"
-      }
     }
   ],
   "headers": [
@@ -22,21 +17,10 @@
           "value": "nosniff"
         },
         {
-          "key": "X-Frame-Options",
-          "value": "DENY"
-        },
-        {
           "key": "X-XSS-Protection",
           "value": "1; mode=block"
         }
       ]
     }
-  ],
-  "services": {
-    "ai-upchaar-api": {
-      "root": "server",
-      "entrypoint": "index.js",
-      "buildCommand": "npm install"
-    }
-  }
+  ]
 }

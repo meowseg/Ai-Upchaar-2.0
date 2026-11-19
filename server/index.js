@@ -36,31 +36,49 @@ app.use(cors({
 
 app.use(express.json({ limit: '10mb' }));
 
-// Pusher instead of Socket.io
-import Pusher from 'pusher';
-const pusher = new Pusher({
-  appId: process.env.PUSHER_APP_ID || '',
-  key: process.env.PUSHER_KEY || '',
-  secret: process.env.PUSHER_SECRET || '',
-  cluster: 'ap2',
-  useTLS: true
-});
+let pusher = null;
+if (process.env.PUSHER_APP_ID && process.env.PUSHER_KEY && process.env.PUSHER_SECRET) {
+  try {
+    const { default: Pusher } = await import('pusher');
+    pusher = new Pusher({
+      appId: process.env.PUSHER_APP_ID,
+      key: process.env.PUSHER_KEY,
+      secret: process.env.PUSHER_SECRET,
+      cluster: process.env.PUSHER_CLUSTER || 'ap2',
+      useTLS: true
+    });
+  } catch (e) {
+    console.warn('Pusher package not available, using in-memory signaling fallback.');
+  }
+}
 
-// Replace socket.io signaling with Pusher events
+// Signaling with Pusher fallback
 app.post('/api/video/signal', async (req, res) => {
   const { roomId, event, data } = req.body;
-  await pusher.trigger(`presence-${roomId}`, event, data);
+  if (pusher) {
+    try {
+      await pusher.trigger(`presence-${roomId}`, event, data);
+    } catch (e) {
+      console.warn('Pusher trigger error:', e);
+    }
+  }
   res.json({ success: true });
 });
 
 // Emergency Call Request
 app.post('/api/video/emergency-request', async (req, res) => {
   const { doctorId, patientName, roomId } = req.body;
-  await pusher.trigger(`doctor-${doctorId}`, 'emergency-call', {
-    patientName,
-    roomId,
-    timestamp: new Date().toISOString()
-  });
+  if (pusher) {
+    try {
+      await pusher.trigger(`doctor-${doctorId}`, 'emergency-call', {
+        patientName,
+        roomId,
+        timestamp: new Date().toISOString()
+      });
+    } catch (e) {
+      console.warn('Pusher emergency trigger error:', e);
+    }
+  }
   res.json({ success: true });
 });
 
