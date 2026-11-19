@@ -90,30 +90,16 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
         };
     }, []);
 
-    // Fetch cases from API on mount
+    // Sync cases from parent props whenever updated
     useEffect(() => {
-        fetch('/api/cases')
-            .then(res => res.json())
-            .then(data => setCases(data))
-            .catch(err => console.error("Error fetching cases:", err));
-    }, []);
-
-    const onUpdateStatusLocal = async (caseId: string, status: CaseStatus, prescription?: string, notes?: string) => {
-        const response = await fetch(`/api/cases/${caseId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status, prescription, doctorNotes: notes }),
-        });
-        if (response.ok) {
-            const updatedCase = await response.json();
-            setCases(cases.map(c => c.id === caseId ? updatedCase : c));
+        if (Array.isArray(initialCases) && initialCases.length > 0) {
+            setCases(initialCases);
         }
-    };
-    
-    // ... rest of the component uses 'cases' state and 'onUpdateStatusLocal' instead of props ...
+    }, [initialCases]);
 
-    // Fix: Derive filteredCases from cases and filter state to resolve 'Cannot find name' errors
-    const filteredCases = cases.filter(c => {
+    // Safe filteredCases derivation ensuring cases is always an array
+    const currentCases = Array.isArray(cases) ? cases : (Array.isArray(initialCases) ? initialCases : []);
+    const filteredCases = currentCases.filter(c => {
         if (filter === 'ALL') return true;
         if (filter === 'CRITICAL') return c.severity === CaseSeverity.CRITICAL;
         if (filter === 'PENDING') return c.status === CaseStatus.PENDING_APPROVAL || c.status === CaseStatus.OPEN;
@@ -210,7 +196,10 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
     useEffect(() => {
         let interval: any;
 
-        // Safety check for container and case selection
+        // Safety check for container, Leaflet library availability, and case selection
+        if (typeof window === 'undefined' || !(window as any).L) return;
+        const L = (window as any).L;
+
         if (selectedCase && deliveryMapContainerRef.current) {
             const dest = selectedCase.patientLocation || { lat: 30.9010, lng: 75.8573 };
             const start = { lat: dest.lat + 0.015, lng: dest.lng - 0.01 };
@@ -1159,7 +1148,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                         <div className="max-w-6xl mx-auto h-full flex flex-col gap-4 md:gap-6 animate-in fade-in slide-in-from-bottom-8 duration-500">
                             <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-4 md:p-6 shrink-0 transition-all hover:shadow-md">
                                 <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 md:gap-0">
-                                    <div className="flex items-center gap-3 md:gap-4"><div className="w-10 h-10 md:w-12 md:h-12 shrink-0 bg-slate-100 rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-slate-500">{selectedCase.patientName.charAt(0)}</div><div><h1 className="text-lg md:text-xl font-bold text-slate-800">{selectedCase.patientName}</h1><p className="text-slate-500 text-[10px] md:text-sm flex flex-wrap items-center gap-x-2 gap-y-1 mt-1"><span className="bg-slate-100 px-1.5 md:px-2 py-0.5 rounded text-slate-600 font-mono">{selectedCase.id}</span><span className="hidden md:inline">•</span><span className="font-semibold">{patients.find(p => p.id === selectedCase.patientId)?.age || 'Unknown'} Yrs</span><span className="hidden md:inline">•</span><span className="capitalize">{patients.find(p => p.id === selectedCase.patientId)?.gender?.substring(0, 1) || 'N/A'}</span><span className="hidden md:inline">•</span><span className="flex items-center gap-1 w-full md:w-auto mt-1 md:mt-0"><MapPin size={10} className="md:w-3 md:h-3" /> {selectedCase.patientLocation?.address || 'Location Unknown'}</span></p></div></div>
+                                    <div className="flex items-center gap-3 md:gap-4"><div className="w-10 h-10 md:w-12 md:h-12 shrink-0 bg-slate-100 rounded-full flex items-center justify-center text-lg md:text-xl font-bold text-slate-500">{selectedCase.patientName?.charAt(0) || 'P'}</div><div><h1 className="text-lg md:text-xl font-bold text-slate-800">{selectedCase.patientName}</h1><p className="text-slate-500 text-[10px] md:text-sm flex flex-wrap items-center gap-x-2 gap-y-1 mt-1"><span className="bg-slate-100 px-1.5 md:px-2 py-0.5 rounded text-slate-600 font-mono">{selectedCase.id}</span><span className="hidden md:inline">•</span><span className="font-semibold">{patients.find(p => p.id === selectedCase.patientId)?.age || 'Unknown'} Yrs</span><span className="hidden md:inline">•</span><span className="capitalize">{patients.find(p => p.id === selectedCase.patientId)?.gender?.substring(0, 1) || 'N/A'}</span><span className="hidden md:inline">•</span><span className="flex items-center gap-1 w-full md:w-auto mt-1 md:mt-0"><MapPin size={10} className="md:w-3 md:h-3" /> {selectedCase.patientLocation?.address || 'Location Unknown'}</span></p></div></div>
                                     <div className="flex flex-wrap items-center gap-2 md:gap-3 w-full md:w-auto max-w-full">
                                         {selectedCase.severity === CaseSeverity.CRITICAL && (
                                             <div className="flex items-center gap-1 md:gap-2 bg-red-100 text-red-700 px-3 py-1 md:px-4 md:py-1.5 rounded-full text-[10px] md:text-xs font-bold animate-pulse ring-2 ring-red-500/20 shrink-0">
@@ -1181,14 +1170,14 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                                     )}
                                     <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden">
                                         <div className="p-3 border-b border-slate-100 bg-slate-50 flex justify-between items-center"><h3 className="font-semibold text-slate-700 text-sm flex items-center gap-2"><FileText size={16} /> Transcript</h3><span className="text-xs text-slate-400">AI-Transcribed • {selectedCase.audioUrl ? 'Audio-to-Text' : 'Chat Log'}</span></div>
-                                        <div className="p-4 overflow-y-auto flex-1 space-y-4">{selectedCase.transcript.length > 0 ? (selectedCase.transcript.map((msg, idx) => (<div key={idx} className={`flex ${msg.role === 'model' ? 'justify-start' : 'justify-end'}`}><div className={`max-w-[85%] p-3 rounded-lg text-sm ${msg.role === 'model' ? 'bg-slate-100 text-slate-700 rounded-tl-none' : 'bg-blue-50 text-blue-900 border border-blue-100 rounded-tr-none'}`}><span className="block text-[10px] font-bold mb-1 opacity-50 uppercase">{msg.role === 'model' ? 'AI Assistant' : 'Patient'}</span>{highlightSymptoms(msg.text)}</div></div>))) : (<p className="text-slate-400 text-center italic text-sm mt-10">No transcript available.</p>)}</div>
+                                        <div className="p-4 overflow-y-auto flex-1 space-y-4">{selectedCase.transcript && Array.isArray(selectedCase.transcript) && selectedCase.transcript.length > 0 ? (selectedCase.transcript.map((msg, idx) => (<div key={idx} className={`flex ${msg.role === 'model' ? 'justify-start' : 'justify-end'}`}><div className={`max-w-[85%] p-3 rounded-lg text-sm ${msg.role === 'model' ? 'bg-slate-100 text-slate-700 rounded-tl-none' : 'bg-blue-50 text-blue-900 border border-blue-100 rounded-tr-none'}`}><span className="block text-[10px] font-bold mb-1 opacity-50 uppercase">{msg.role === 'model' ? 'AI Assistant' : 'Patient'}</span>{highlightSymptoms(msg.text)}</div></div>))) : (<p className="text-slate-400 text-center italic text-sm mt-10">No transcript available.</p>)}</div>
 
                                         {selectedCase.severity === CaseSeverity.CRITICAL && (
                                             <div className="p-4 bg-red-50 border-t border-red-100 flex items-center justify-between">
                                                 <div className="flex items-center gap-2 text-red-700 text-xs font-bold">
                                                     <ShieldAlert size={16} /> Critical Priority Interaction Needed
                                                 </div>
-                                                <div className="flex gap-2">
+                                                <div className="flex items-center gap-2">
                                                     <button
                                                         onClick={() => {
                                                             if (onStartVideoCall && selectedCase) {
@@ -1210,6 +1199,13 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                                                     >
                                                         <Video size={14} /> Start Video Call
                                                     </button>
+                                                    <a
+                                                        href={`tel:${selectedCase.patientId?.replace(/^P-/, '') || '9460877984'}`}
+                                                        className="px-3 py-1.5 bg-white border border-red-200 text-red-600 hover:bg-red-50 rounded-lg transition flex items-center gap-1.5 text-xs font-bold shadow-sm cursor-pointer"
+                                                        title="Direct Phone Call to Patient"
+                                                    >
+                                                        <Phone size={14} /> Direct Call
+                                                    </a>
                                                 </div>
                                             </div>
                                         )}
