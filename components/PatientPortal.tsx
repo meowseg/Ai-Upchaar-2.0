@@ -168,20 +168,31 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
 
   useEffect(() => {
     if (currentView === 'LOCATE_NEARBY' && mapContainerRef.current && !mapRef.current) {
-      // Default to user coordinates or center of India if GPS not yet resolved
-      const defaultPos = userLocation ? [userLocation.lat, userLocation.lng] : [26.5786, 74.8698];
-      mapRef.current = L.map(mapContainerRef.current, {
-        zoomControl: false,
-        attributionControl: false
-      }).setView(defaultPos, 13);
+      if (typeof window === 'undefined' || !(window as any).L) return;
+      const L = (window as any).L;
 
-      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapRef.current);
-      markersGroupRef.current = L.layerGroup().addTo(mapRef.current);
+      const userLat = Number(userLocation?.lat);
+      const userLng = Number(userLocation?.lng);
+      const defaultPos: [number, number] = (!isNaN(userLat) && !isNaN(userLng) && userLat !== 0)
+        ? [userLat, userLng]
+        : [26.5786, 74.8698];
 
-      if (nearbyHospitals.length > 0) {
-        updateMapMarkers(nearbyHospitals, userLocation || undefined);
-      } else {
-        detectLocation();
+      try {
+        mapRef.current = L.map(mapContainerRef.current, {
+          zoomControl: false,
+          attributionControl: false
+        }).setView(defaultPos, 13);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(mapRef.current);
+        markersGroupRef.current = L.layerGroup().addTo(mapRef.current);
+
+        if (nearbyHospitals.length > 0) {
+          updateMapMarkers(nearbyHospitals, userLocation || undefined);
+        } else {
+          detectLocation();
+        }
+      } catch (e) {
+        console.warn('Patient portal Leaflet map caught:', e);
       }
     }
 
@@ -751,6 +762,12 @@ const PatientPortal: React.FC<PatientPortalProps> = ({ user, patientHistory = []
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ doctorId: 'DR101', patientName: user.name, roomId: emgRoomId })
+              }).catch(() => {});
+
+              fetch('/api/emergency', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ patientId: user.id, patientName: user.name, roomId: emgRoomId })
               }).catch(() => {});
             } catch (err) {}
 

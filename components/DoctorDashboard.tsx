@@ -62,9 +62,22 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
         roomId: string;
         timestamp: string;
     } | null>(null);
+    const [manualRoomInput, setManualRoomInput] = useState('');
 
-    // Cross-tab Emergency Call Listener (via BroadcastChannel & Storage Event)
+    // Cross-tab & Cross-Device Emergency Call Listener
     useEffect(() => {
+        // 1. Check existing emergency in localStorage on mount
+        try {
+            const savedEmg = localStorage.getItem('upchaar_last_emergency');
+            if (savedEmg) {
+                const parsed = JSON.parse(savedEmg);
+                if (parsed && parsed.timestamp && (Date.now() - new Date(parsed.timestamp).getTime() < 300000)) {
+                    setIncomingEmergency(parsed);
+                }
+            }
+        } catch (e) {}
+
+        // 2. BroadcastChannel for instant same-browser cross-tab delivery
         let bc: BroadcastChannel | null = null;
         try {
             bc = new BroadcastChannel('upchaar_emergency_channel');
@@ -75,6 +88,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
             };
         } catch (err) {}
 
+        // 3. Storage event for cross-window delivery
         const handleStorage = (e: StorageEvent) => {
             if (e.key === 'upchaar_last_emergency' && e.newValue) {
                 try {
@@ -84,9 +98,27 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
             }
         };
         window.addEventListener('storage', handleStorage);
+
+        // 4. Server API polling (/api/emergency) so doctor sees incoming calls across separate devices/networks
+        const checkServerEmergency = async () => {
+            try {
+                const res = await fetch('/api/emergency');
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data && data.emergency) {
+                        setIncomingEmergency(data.emergency);
+                    }
+                }
+            } catch (err) {}
+        };
+
+        checkServerEmergency();
+        const emgInterval = setInterval(checkServerEmergency, 3000);
+
         return () => {
             if (bc) bc.close();
             window.removeEventListener('storage', handleStorage);
+            clearInterval(emgInterval);
         };
     }, []);
 
@@ -201,94 +233,114 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
         const L = (window as any).L;
 
         if (selectedCase && deliveryMapContainerRef.current) {
-            const dest = selectedCase.patientLocation || { lat: 30.9010, lng: 75.8573 };
-            const start = { lat: dest.lat + 0.015, lng: dest.lng - 0.01 };
-
-            // Cleanup previous map instance to prevent "Map already initialized" error
-            if (deliveryMapRef.current) {
-                deliveryMapRef.current.remove();
-                deliveryMapRef.current = null;
-            }
-
-            // Initialize fresh map instance for the selected case
-            deliveryMapRef.current = L.map(deliveryMapContainerRef.current, {
-                zoomControl: false,
-                attributionControl: false,
-                dragging: true,
-                scrollWheelZoom: false,
-                touchZoom: true
-            }).setView([dest.lat, dest.lng], 14);
-
-            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(deliveryMapRef.current);
-            deliveryMarkersRef.current = L.layerGroup().addTo(deliveryMapRef.current);
-
-            const updateTracking = () => {
-                if (!deliveryMarkersRef.current || !deliveryMapRef.current) return;
-                deliveryMarkersRef.current.clearLayers();
-
-                // 1. Patient Marker (Always Visible)
-                const patientIcon = L.divIcon({
-                    className: 'custom-div-icon',
-                    html: `<div class="text-blue-600 drop-shadow-md"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" stroke="white" stroke-width="1.5"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="white"/></svg></div>`,
-                    iconSize: [28, 28],
-                    iconAnchor: [14, 28]
-                });
-                L.marker([dest.lat, dest.lng], { icon: patientIcon }).addTo(deliveryMarkersRef.current);
-
-                // 2. Conditional Delivery Tracking (Only if Approved)
-                if (selectedCase.status === 'APPROVED') {
-                    const cycleTime = 120000; // 2 minute simulation loop
-                    const progress = (Date.now() % cycleTime) / cycleTime;
-                    const currentLat = start.lat + (dest.lat - start.lat) * progress;
-                    const currentLng = start.lng + (dest.lng - start.lng) * progress;
-
-                    const agentIcon = L.divIcon({
-                        className: 'custom-div-icon',
-                        html: `<div class="p-1.5 bg-white rounded-full border-2 border-emerald-500 shadow-xl animate-bounce text-emerald-600"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg></div>`,
-                        iconSize: [32, 32],
-                        iconAnchor: [16, 16]
-                    });
-                    L.marker([currentLat, currentLng], { icon: agentIcon }).addTo(deliveryMarkersRef.current);
-
-                    // Route Line
-                    L.polyline([[currentLat, currentLng], [dest.lat, dest.lng]], {
-                        color: '#10b981',
-                        weight: 4,
-                        dashArray: '8, 12',
-                        opacity: 0.7
-                    }).addTo(deliveryMarkersRef.current);
-
-                    // Dynamic ETA Update
-                    const remainingMins = Math.ceil(20 * (1 - progress));
-                    setCurrentEta(`${remainingMins} min`);
-
-                    deliveryMapRef.current.panTo([currentLat, currentLng], { animate: true });
-                } else {
-                    setCurrentEta('Pending Approval');
-                    deliveryMapRef.current.setView([dest.lat, dest.lng], 14);
+            try {
+                // Safely parse coordinates from object or JSON string with bulletproof fallbacks
+                let rawLoc: any = selectedCase.patientLocation;
+                if (typeof rawLoc === 'string') {
+                    try { rawLoc = JSON.parse(rawLoc); } catch (e) { rawLoc = null; }
                 }
-            };
 
-            // Start tracking logic
-            updateTracking();
-            if (selectedCase.status === 'APPROVED') {
-                interval = setInterval(updateTracking, 3000);
-            }
+                const parsedLat = Number(rawLoc?.lat);
+                const parsedLng = Number(rawLoc?.lng);
 
-            // Critical: Handle blank map issues caused by container resizing or re-rendering
-            setTimeout(() => {
+                const validLat = (!isNaN(parsedLat) && parsedLat !== 0) ? parsedLat : 30.9010;
+                const validLng = (!isNaN(parsedLng) && parsedLng !== 0) ? parsedLng : 75.8573;
+
+                const dest = { lat: validLat, lng: validLng };
+                const start = { lat: dest.lat + 0.015, lng: dest.lng - 0.01 };
+
+                // Cleanup previous map instance to prevent "Map already initialized" error
                 if (deliveryMapRef.current) {
-                    deliveryMapRef.current.invalidateSize();
-                }
-            }, 400);
-
-            return () => {
-                if (interval) clearInterval(interval);
-                if (deliveryMapRef.current) {
-                    deliveryMapRef.current.remove();
+                    try { deliveryMapRef.current.remove(); } catch (e) {}
                     deliveryMapRef.current = null;
                 }
-            };
+
+                // Initialize fresh map instance for the selected case
+                deliveryMapRef.current = L.map(deliveryMapContainerRef.current, {
+                    zoomControl: false,
+                    attributionControl: false,
+                    dragging: true,
+                    scrollWheelZoom: false,
+                    touchZoom: true
+                }).setView([dest.lat, dest.lng], 14);
+
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png').addTo(deliveryMapRef.current);
+                deliveryMarkersRef.current = L.layerGroup().addTo(deliveryMapRef.current);
+
+                const updateTracking = () => {
+                    try {
+                        if (!deliveryMarkersRef.current || !deliveryMapRef.current) return;
+                        deliveryMarkersRef.current.clearLayers();
+
+                        // 1. Patient Marker (Always Visible)
+                        const patientIcon = L.divIcon({
+                            className: 'custom-div-icon',
+                            html: `<div class="text-blue-600 drop-shadow-md"><svg viewBox="0 0 24 24" width="28" height="28" fill="currentColor" stroke="white" stroke-width="1.5"><path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/><circle cx="12" cy="9" r="2.5" fill="white"/></svg></div>`,
+                            iconSize: [28, 28],
+                            iconAnchor: [14, 28]
+                        });
+                        L.marker([dest.lat, dest.lng], { icon: patientIcon }).addTo(deliveryMarkersRef.current);
+
+                        // 2. Conditional Delivery Tracking (Only if Approved)
+                        if (selectedCase.status === 'APPROVED') {
+                            const cycleTime = 120000; // 2 minute simulation loop
+                            const progress = (Date.now() % cycleTime) / cycleTime;
+                            const currentLat = start.lat + (dest.lat - start.lat) * progress;
+                            const currentLng = start.lng + (dest.lng - start.lng) * progress;
+
+                            const agentIcon = L.divIcon({
+                                className: 'custom-div-icon',
+                                html: `<div class="p-1.5 bg-white rounded-full border-2 border-emerald-500 shadow-xl animate-bounce text-emerald-600"><svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor"><path d="M20 8h-3V4H3c-1.1 0-2 .9-2 2v11h2c0 1.66 1.34 3 3 3s3-1.34 3-3h6c0 1.66 1.34 3 3 3s3-1.34 3-3h2v-5l-3-4zM6 18.5c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5zm13.5-9l1.96 2.5H17V9.5h2.5zm-1.5 9c-.83 0-1.5-.67-1.5-1.5s.67-1.5 1.5-1.5 1.5.67 1.5 1.5-.67 1.5-1.5 1.5z"/></svg></div>`,
+                                iconSize: [32, 32],
+                                iconAnchor: [16, 16]
+                            });
+                            L.marker([currentLat, currentLng], { icon: agentIcon }).addTo(deliveryMarkersRef.current);
+
+                            // Route Line
+                            L.polyline([[currentLat, currentLng], [dest.lat, dest.lng]], {
+                                color: '#10b981',
+                                weight: 4,
+                                dashArray: '8, 12',
+                                opacity: 0.7
+                            }).addTo(deliveryMarkersRef.current);
+
+                            // Dynamic ETA Update
+                            const remainingMins = Math.ceil(20 * (1 - progress));
+                            setCurrentEta(`${remainingMins} min`);
+
+                            deliveryMapRef.current.panTo([currentLat, currentLng], { animate: true });
+                        } else {
+                            setCurrentEta('Pending Approval');
+                            deliveryMapRef.current.setView([dest.lat, dest.lng], 14);
+                        }
+                    } catch (e) {
+                        console.warn('Map tracking update error:', e);
+                    }
+                };
+
+                // Start tracking logic
+                updateTracking();
+                if (selectedCase.status === 'APPROVED') {
+                    interval = setInterval(updateTracking, 3000);
+                }
+
+                // Critical: Handle blank map issues caused by container resizing or re-rendering
+                setTimeout(() => {
+                    if (deliveryMapRef.current) {
+                        try { deliveryMapRef.current.invalidateSize(); } catch (e) {}
+                    }
+                }, 400);
+
+                return () => {
+                    if (interval) clearInterval(interval);
+                    if (deliveryMapRef.current) {
+                        try { deliveryMapRef.current.remove(); } catch (e) {}
+                        deliveryMapRef.current = null;
+                    }
+                };
+            } catch (mapInitErr) {
+                console.warn('Leaflet map caught gracefully to prevent crash:', mapInitErr);
+            }
         }
     }, [selectedCase?.id, selectedCase?.status]); // Re-run when patient selection or status changes
 
@@ -776,34 +828,44 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
     const EmergencyBanner = () => {
         if (!incomingEmergency) return null;
         return (
-            <div className="bg-red-600 text-white px-4 py-3 shadow-lg flex flex-col sm:flex-row items-center justify-between gap-3 z-30 animate-pulse">
+            <div className="bg-red-600 text-white px-4 py-3 shadow-xl flex flex-col sm:flex-row items-center justify-between gap-3 z-50 animate-pulse border-b-2 border-red-700">
                 <div className="flex items-center gap-2 text-sm font-bold">
-                    <AlertTriangle size={20} className="animate-bounce shrink-0" />
-                    <span>🚨 INCOMING EMERGENCY CALL from <strong>{incomingEmergency.patientName}</strong>!</span>
-                    <span className="text-xs bg-red-800 px-2 py-0.5 rounded font-mono">Room: {incomingEmergency.roomId}</span>
+                    <AlertTriangle size={22} className="animate-bounce shrink-0 text-amber-300" />
+                    <span>🚨 INCOMING EMERGENCY CALL from <strong className="underline decoration-white underline-offset-2">{incomingEmergency.patientName}</strong>!</span>
+                    <span className="text-xs bg-red-800 px-2.5 py-1 rounded font-mono border border-red-500">Room: {incomingEmergency.roomId}</span>
                 </div>
                 <div className="flex items-center gap-2">
                     <button
                         onClick={() => {
+                            const callRoom = incomingEmergency.roomId;
+                            const callPatId = incomingEmergency.patientId;
+                            const callPatName = incomingEmergency.patientName;
+                            setIncomingEmergency(null);
+                            localStorage.removeItem('upchaar_last_emergency');
+                            fetch('/api/emergency', { method: 'DELETE' }).catch(() => {});
+
                             if (onStartVideoCall) {
                                 onStartVideoCall({
-                                    roomId: incomingEmergency.roomId,
-                                    patientId: incomingEmergency.patientId,
-                                    patientName: incomingEmergency.patientName,
+                                    roomId: callRoom,
+                                    patientId: callPatId,
+                                    patientName: callPatName,
                                     doctorId: user.id,
                                     doctorName: user.name,
                                     isEmergency: true
                                 });
                             }
-                            setIncomingEmergency(null);
                         }}
-                        className="px-4 py-1.5 bg-white text-red-700 rounded-lg text-xs font-black shadow hover:bg-red-50 transition cursor-pointer flex items-center gap-1.5"
+                        className="px-4 py-2 bg-white hover:bg-emerald-50 text-emerald-700 rounded-lg text-xs font-black shadow-lg transition cursor-pointer flex items-center gap-1.5 ring-2 ring-white"
                     >
-                        <Video size={14} /> Answer Video Call
+                        <Video size={16} className="text-emerald-600" /> Answer Video Call
                     </button>
                     <button
-                        onClick={() => setIncomingEmergency(null)}
-                        className="px-3 py-1.5 bg-red-800 hover:bg-red-900 text-white rounded-lg text-xs font-semibold"
+                        onClick={() => {
+                            setIncomingEmergency(null);
+                            localStorage.removeItem('upchaar_last_emergency');
+                            fetch('/api/emergency', { method: 'DELETE' }).catch(() => {});
+                        }}
+                        className="px-3 py-2 bg-red-800 hover:bg-red-900 text-white rounded-lg text-xs font-semibold cursor-pointer"
                     >
                         Dismiss
                     </button>
@@ -828,7 +890,7 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                 <div className="flex-1 overflow-hidden flex flex-col">
                     <EmergencyBanner />
                     {/* Header */}
-                    <div className="bg-white border-b border-slate-200 px-6 py-4 flex justify-between items-center shadow-sm">
+                    <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 shadow-sm">
                         <div>
                             <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                                 <Video className="text-teal-600" size={24} />
@@ -838,7 +900,48 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                                 Manage scheduled patient video appointments and clinic visits
                             </p>
                         </div>
-                        <HeaderAvatar />
+                        <div className="flex items-center gap-3 w-full sm:w-auto justify-between sm:justify-end">
+                            <div className="flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+                                <input
+                                    type="text"
+                                    placeholder="Enter Room Code..."
+                                    value={manualRoomInput}
+                                    onChange={(e) => setManualRoomInput(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if (e.key === 'Enter' && manualRoomInput.trim() && onStartVideoCall) {
+                                            onStartVideoCall({
+                                                roomId: manualRoomInput.trim(),
+                                                patientId: 'P-MANUAL',
+                                                patientName: 'Manual Teleconsultation',
+                                                doctorId: user.id,
+                                                doctorName: user.name,
+                                                isEmergency: false
+                                            });
+                                        }
+                                    }}
+                                    className="px-2.5 py-1 text-xs bg-white rounded-lg border border-slate-200 outline-none w-36 font-mono text-slate-800 placeholder-slate-400"
+                                />
+                                <button
+                                    onClick={() => {
+                                        if (manualRoomInput.trim() && onStartVideoCall) {
+                                            onStartVideoCall({
+                                                roomId: manualRoomInput.trim(),
+                                                patientId: 'P-MANUAL',
+                                                patientName: 'Manual Teleconsultation',
+                                                doctorId: user.id,
+                                                doctorName: user.name,
+                                                isEmergency: false
+                                            });
+                                        }
+                                    }}
+                                    disabled={!manualRoomInput.trim()}
+                                    className="px-3 py-1 bg-teal-600 hover:bg-teal-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                                >
+                                    <Video size={13} /> Join Call
+                                </button>
+                            </div>
+                            <HeaderAvatar />
+                        </div>
                     </div>
 
                     {/* Stats & Filter Bar */}
@@ -1141,7 +1244,49 @@ const DoctorDashboard: React.FC<DoctorDashboardProps> = ({
                         <div className="flex items-center gap-2"><div className="p-1.5 bg-red-100 text-red-600 rounded-lg"><AlertTriangle size={16} /></div><div><p className="text-[10px] font-bold text-slate-500 uppercase">Critical</p><p className="text-sm font-black leading-none">{stats.criticalPending}</p></div></div>
                         <div className="hidden sm:flex items-center gap-2"><div className="p-1.5 bg-emerald-100 text-emerald-600 rounded-lg"><Truck size={16} /></div><div><p className="text-[10px] font-bold text-slate-500 uppercase">Deliveries</p><p className="text-sm font-black leading-none">{stats.deliveriesInProgress}</p></div></div>
                     </div>
-                    <div className="hidden md:block"><HeaderAvatar /></div>
+                    <div className="flex items-center gap-3">
+                        <div className="hidden lg:flex items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+                            <input
+                                type="text"
+                                placeholder="Join Room by Code..."
+                                value={manualRoomInput}
+                                onChange={(e) => setManualRoomInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && manualRoomInput.trim() && onStartVideoCall) {
+                                        onStartVideoCall({
+                                            roomId: manualRoomInput.trim(),
+                                            patientId: 'P-MANUAL',
+                                            patientName: 'Manual Teleconsultation',
+                                            doctorId: user.id,
+                                            doctorName: user.name,
+                                            isEmergency: false
+                                        });
+                                    }
+                                }}
+                                className="px-2.5 py-1 text-xs bg-white rounded-lg border border-slate-200 outline-none w-36 font-mono text-slate-800 placeholder-slate-400"
+                            />
+                            <button
+                                onClick={() => {
+                                    if (manualRoomInput.trim() && onStartVideoCall) {
+                                        onStartVideoCall({
+                                            roomId: manualRoomInput.trim(),
+                                            patientId: 'P-MANUAL',
+                                            patientName: 'Manual Teleconsultation',
+                                            doctorId: user.id,
+                                            doctorName: user.name,
+                                            isEmergency: false
+                                        });
+                                    }
+                                }}
+                                disabled={!manualRoomInput.trim()}
+                                className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer"
+                                title="Directly join room by code"
+                            >
+                                <Video size={13} /> Join Call
+                            </button>
+                        </div>
+                        <div className="hidden md:block"><HeaderAvatar /></div>
+                    </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-50/50 pb-20 md:pb-6 relative smooth-scroll">
                     {selectedCase ? (
